@@ -13,8 +13,9 @@ phone ─ SIP provider ◄─ Asterisk (Docker, registers outbound) ─ AudioSoc
 
 Asterisk logs in to your SIP provider like a desk phone, so you need no public IP, port forward or tunnel.
 
-**Status: experimental.** Its author uses it daily on a Czech line from Odorik, on Linux with Hermes Agent
-v0.22.5, for calls in both directions. Other providers, languages and set-ups have not been tried yet.
+**Status: experimental.** Its author uses it daily on a Czech line from Odorik, on Linux, for calls in both
+directions. Tested with Hermes Agent v0.22.5 and newer. Other providers, languages and set-ups have not been
+tried yet.
 
 ## What you need
 

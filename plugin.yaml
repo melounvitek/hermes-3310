@@ -113,7 +113,9 @@ config_schema:
     description: "How long you must talk over Hermes to interrupt it, in steps of 32 ms"
 # Hermes reads these, but its defaults lack them: `hermes config set` would warn they are unknown.
 config_keys: [tts.streaming.provider, tts.piper_stream]
+# Piper only where Hermes's own Piper installs: onnxruntime has no Android or Intel Mac wheel, Piper none
+# for Windows on ARM. Without these markers Hermes v0.22.5, which resolves for every platform, refuses the plugin.
 python_dependencies:
   - "numpy>=1.26,<3"
-  - "piper-tts>=1.3,<2"
-  - "onnxruntime>=1.17,<2"
+  - "piper-tts>=1.3,<2; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'"
+  - "onnxruntime>=1.17,<2; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'"

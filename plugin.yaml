@@ -1,0 +1,119 @@
+name: hermes-3310
+label: Hermes 3310
+kind: platform
+version: 0.1.0
+description: >
+  Call Hermes over a normal phone line. Needs Docker: Asterisk runs in its own container (set up with
+  ./install-asterisk.sh in the plugin folder), answers the call and streams the audio over AudioSocket;
+  replies are spoken sentence by sentence with Piper. The PIN, the callers and the SIP account are on the
+  Hermes 3310 card of the Messaging page; settings apply when the gateway restarts.
+# Labels (prompt) and help (description) of the Hermes 3310 card on the Desktop's Messaging page.
+requires_env:
+  - name: PHONE_PIN
+    description: "Digits every caller types on the keypad, followed by #, before Hermes listens; 4 to 32 digits, better 6 or more"
+    prompt: "PIN"
+    password: true
+    secret: true
+  - name: PHONE_ALLOWED_CALLERS
+    description: "Numbers that may call Hermes, with the country code and without + (e.g. 420777000111; a caller shown without it, 777000111, matches too); other callers are hung up on"
+    prompt: "Allowed callers"
+    password: false
+  - name: SIP_SERVER
+    description: "SIP server of your phone number (e.g. sip.odorik.cz). Asterisk reads it: run install-asterisk.sh again after changing it"
+    prompt: "SIP server"
+  - name: SIP_USER
+    description: "User name of the SIP account. Run install-asterisk.sh again after changing it"
+    prompt: "SIP user name"
+  - name: SIP_PASSWORD
+    description: "Password of the SIP account. Run install-asterisk.sh again after changing it"
+    prompt: "SIP password"
+    password: true
+    secret: true
+optional_env:
+  - name: PHONE_HOME_NUMBER
+    description: "Your number, as your provider dials it (e.g. 00420777000111): the only number Hermes calls, to say messages from scheduled jobs. Must be one of the allowed callers; empty: Hermes never calls"
+    prompt: "Your number for Hermes's calls"
+    password: false
+  - name: SIP_CALLER_ID
+    description: "The line's own number, as your provider dials it (e.g. 00420212345678), shown when Hermes calls you; applies after a gateway restart"
+    prompt: "Caller ID of the line"
+    password: false
+  - name: SIP_IDENTIFY_EXTRA
+    description: "Extra Asterisk identify line, for a provider whose media servers are outside the SIP server's address (set for sip.odorik.cz automatically). Run install-asterisk.sh again after changing it"
+    prompt: "Extra Asterisk identify line"
+# The plugin's page under Settings → Plugins in the Desktop (plugins.entries.hermes-3310.settings).
+config_schema:
+  instructions:
+    default: ""
+    label: "Instructions for Hermes"
+    description: "Added to what Hermes is told on every call, e.g. the language to answer in: Odpovídej česky, mluveným stylem."
+  language:
+    default: ""
+    label: "Language you speak"
+    description: "Language code for the speech recognition on calls, e.g. cs; empty: Hermes's speech-to-text settings decide"
+  phrase_pin:
+    default: "Enter your PIN, then press the hash key."
+    label: "PIN prompt"
+    description: "Said when a call starts"
+  phrase_wrong_pin:
+    default: "Wrong PIN."
+    label: "Wrong PIN"
+  phrase_hello:
+    default: "Hello, this is Hermes."
+    label: "Greeting"
+    description: "Said after the PIN when you called"
+  phrase_bye:
+    default: "Goodbye."
+    label: "Goodbye"
+    description: "Said before hanging up on a caller who is not let in"
+  phrase_not_understood:
+    default: "Sorry, I didn't catch that. Please say it again."
+    label: "Not understood"
+  phrase_stopped:
+    default: "Stopped."
+    label: "Stopped"
+    description: "Said after you press *"
+  phrase_denied:
+    default: "That needs an approval, which is not possible on the phone."
+    label: "Approval denied"
+    description: "Said when a command needs your approval, which the phone always denies"
+  phrase_missed:
+    default: "Earlier I tried to call you."
+    label: "Missed call"
+    description: "Said before the messages of calls you missed"
+  stt_timeout:
+    type: float
+    default: 5
+    label: "Recognition timeout"
+    description: "Seconds to wait for the speech recognition of a sentence before asking you again"
+  stt_fallback:
+    choices: [none, local]
+    default: none
+    label: "Local recognition fallback"
+    description: "local: local Whisper when the cloud recognition fails or is slow (needs faster-whisper, about 1 GB of memory)"
+  end_silence:
+    type: float
+    default: 1.2
+    label: "Pause that ends a sentence"
+    description: "Seconds of silence after which what you said goes to Hermes"
+  start_vad:
+    type: float
+    default: 0.5
+    label: "Speech threshold"
+    description: "0 to 1: how clearly a sound must be speech to start a sentence"
+  barge_vad:
+    type: float
+    default: 0.5
+    label: "Interrupt threshold"
+    description: "0 to 1: how clearly what you say over Hermes must be speech to interrupt it"
+  barge_windows:
+    type: int
+    default: 5
+    label: "Interrupt length"
+    description: "How long you must talk over Hermes to interrupt it, in steps of 32 ms"
+# Hermes reads these, but its defaults lack them: `hermes config set` would warn they are unknown.
+config_keys: [tts.streaming.provider, tts.piper_stream]
+python_dependencies:
+  - "numpy>=1.26,<3"
+  - "piper-tts>=1.3,<2"
+  - "onnxruntime>=1.17,<2"

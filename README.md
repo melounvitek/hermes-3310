@@ -150,7 +150,7 @@ The plugin's page under the Desktop's **Settings → Plugins**, stored in `plugi
 |---|---|---|
 | `language` | – | the language you speak (`cs`), for speech recognition on calls; else Hermes's STT settings decide |
 | `instructions` | – | added to what Hermes is told on calls, e.g. the language to answer in |
-| `spoken_pin` | off | the PIN may also be said, digit by digit in Czech (see [Security](#security)); needs faster-whisper, ~250 MB RAM while on |
+| `spoken_pin` | off | the PIN may also be said, digit by digit in Czech (see [Security](#security)); needs faster-whisper (`hermes pm install --extra stt-whisper`), ~250 MB RAM while on |
 | `phrase_pin` … `phrase_missed` | English | the texts the plugin speaks itself (see the example above) |
 | `stt_timeout` | `5` | seconds before recognition is given up |
 | `stt_fallback` | `none` | `local`: use local Whisper when the cloud fails or is slow (needs faster-whisper, ~1 GB RAM); it hears in Hermes's `stt.local.language` or `stt.language`, not `language` |

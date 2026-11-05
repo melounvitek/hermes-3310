@@ -55,7 +55,7 @@ config_schema:
     type: bool
     default: false
     label: "Spoken PIN"
-    description: "Callers may also say the PIN, digit by digit in Czech, instead of typing it. It is recognised on this machine (faster-whisper base, about 250 MB of memory while on) and never passed to Hermes; anyone who hears it can use it"
+    description: "Callers may also say the PIN, digit by digit in Czech, instead of typing it. It is recognised on this machine and never passed to Hermes; anyone who hears it can use it. Needs faster-whisper: run hermes pm install --extra stt-whisper, then restart the gateway (the model, 142 MB, downloads at the first start; about 250 MB of memory while on)"
   phrase_pin:
     default: "Enter your PIN, then press the hash key."
     label: "PIN prompt"

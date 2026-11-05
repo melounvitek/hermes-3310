@@ -129,6 +129,29 @@ async def test_speech_without_a_pin_uses_a_try_but_not_the_lockout_and_keys_type
     await adapter.disconnect()
 
 
+async def test_without_faster_whisper_the_log_says_how_to_get_it_and_keys_work(make_adapter, monkeypatch, caplog):
+    monkeypatch.setitem(sys.modules, "faster_whisper", None)  # not installed
+    monkeypatch.setenv("PHONE_PIN", PIN)
+    adapter = make_adapter(spoken_pin=True)
+    caplog.set_level(logging.ERROR, logger=type(adapter).__module__)
+    assert await adapter.connect()
+    await until(lambda: "hermes pm install --extra stt-whisper" in caplog.text)
+    events = recording_handler(adapter)
+    phone = await Phone().dial(adapter.port, calls_dir=adapter.calls_dir)
+    await phone.wait_for_silence()
+    prompt = phone.speech_frames()
+    assert prompt and not heard_about(prompt, SHORT_PHRASES["pin_spoken"])  # the keypad prompt
+
+    await phone.press(PIN + "#")
+    await until(lambda: str(phone.call_id) in adapter._calls)
+    await adapter.submit_utterance(str(phone.call_id), "Ahoj")
+    await until(lambda: events)
+
+    assert [event.text for event in events] == ["Ahoj"]
+    await phone.hang_up()
+    await adapter.disconnect()
+
+
 async def test_a_spoken_pin_is_ignored_unless_turned_on(start, monkeypatch):
     stt = FakeSTT(monkeypatch)
     adapter = await start()

@@ -330,6 +330,9 @@ class PhoneAdapter(BasePlatformAdapter):
         try:
             from faster_whisper import WhisperModel
             self._pin_model = WhisperModel("base", device="cpu", compute_type="int8", cpu_threads=2)
+        except ImportError:  # not in a default Hermes install
+            logger.error("phone: the spoken PIN needs faster-whisper (hermes pm install --extra stt-whisper, then "
+                         "restart the gateway); until then calls ask for the keypad")
         except Exception:
             logger.error("phone: cannot load the local Whisper model for the spoken PIN", exc_info=True)
 

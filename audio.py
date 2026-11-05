@@ -71,6 +71,7 @@ class SpeechDetector:
         self._preroll = int(SR * 2 * preroll_s)
         self._lead_in, self._speech = bytearray(), bytearray()
         self.in_speech, self._loud, self._quiet = False, 0, 0
+        self._still = 0  # windows without speech in a row, in speech or not
 
     def _probabilities(self, pcm: bytes) -> list[float]:
         x = np.frombuffer(pcm, "<i2").astype(np.float32) / 32768
@@ -88,6 +89,12 @@ class SpeechDetector:
             probabilities.append(float(np.ravel(out)[0]))
         return probabilities
 
+    @property
+    def silent(self) -> bool:
+        """No speech for as long as the pause that ends a sentence: not even speech just starting, which
+        ``in_speech`` waits a few windows to confirm, nor going on past a cut at ``MAX_S``."""
+        return self._still >= self._end_windows
+
     def drop(self) -> None:
         """Forget speech in progress."""
         self.in_speech, self._loud, self._speech = False, 0, bytearray()
@@ -97,6 +104,7 @@ class SpeechDetector:
         threshold, windows = ((self.strict_threshold, self.strict_windows) if strict
                               else (self.start_threshold, self.START_WINDOWS))
         for p in self._probabilities(pcm):
+            self._still = self._still + 1 if p < self.END_THRESHOLD else 0
             if not self.in_speech:
                 self._loud = self._loud + 1 if p > threshold else 0
                 if self._loud >= windows:

@@ -13,9 +13,9 @@ from test_outbound_calls import heard_about
 
 CARD_FIELDS = ["PHONE_PIN", "PHONE_ALLOWED_CALLERS", "SIP_SERVER", "SIP_USER", "SIP_PASSWORD",
                "PHONE_HOME_NUMBER", "SIP_CALLER_ID", "SIP_IDENTIFY_EXTRA"]
-PHRASES = ["phrase_pin", "phrase_wrong_pin", "phrase_hello", "phrase_bye", "phrase_not_understood",
+PHRASES = ["phrase_pin", "phrase_pin_spoken", "phrase_wrong_pin", "phrase_hello", "phrase_bye", "phrase_not_understood",
            "phrase_stopped", "phrase_denied", "phrase_missed"]
-CALLS = ["instructions", "language"]
+CALLS = ["instructions", "language", "spoken_pin"]
 LISTENING = ["stt_timeout", "stt_fallback", "end_silence", "start_vad", "barge_vad", "barge_windows"]
 
 
@@ -89,6 +89,7 @@ async def test_settings_saved_on_the_plugin_page_are_used_on_the_next_call(herme
     assert all(field["label"] != key for key, field in form.items())
     assert form["phrase_hello"]["value"] == "Hello, this is Hermes."
     assert (form["stt_fallback"]["type"], form["stt_fallback"]["choices"]) == ("enum", ["none", "local"])
+    assert (form["spoken_pin"]["type"], form["spoken_pin"]["value"]) == ("boolean", False)  # a switch, off
     assert saved["result"]["written"] == ["phrase_hello"]
 
     hermes.load()

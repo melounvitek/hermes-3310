@@ -11,6 +11,7 @@ and said on their next call.
 import asyncio
 import contextlib
 import contextvars
+import difflib
 import hmac
 import ipaddress
 import json
@@ -27,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import numpy as np
 from gateway.config import Platform
 from gateway.platforms._shared import get_scoped_secret
 from gateway.platforms.base import BasePlatformAdapter, SendResult, StreamingTTSHandle
@@ -53,6 +55,8 @@ CRON_WRAPPER = re.compile(r"Cronjob Response: [^\n]*\n(?:\(job_id: [^\n]*\)\n)?-
 TAKE_TIMEOUT_S = 5  # Asterisk takes a call file at once; one it did not take is withdrawn
 RING_TIMEOUT_S = 60  # the dialplan rings for 20 s; after this the call is given up in any case
 MISSED_KEEP_S = 24 * 3600  # a missed message older than this is stale and dropped
+PIN_DIGIT_WORDS = {"nula": 0, "jedna": 1, "jeden": 1, "dva": 2, "dvě": 2, "tři": 3, "čtyři": 4, "pět": 5,
+                   "šest": 6, "sedm": 7, "sedum": 7, "osm": 8, "osum": 8, "devět": 9}
 
 
 def _digits(number: str) -> str:
@@ -93,6 +97,24 @@ def _transcribe_wav(pcm: bytes, local: bool) -> dict:
         os.unlink(path)
 
 
+def _spoken_digits(model, pcm: bytes) -> str:
+    """The Czech digits said in ``pcm``; a misheard digit word (sedmu, čest) counts as the closest one."""
+    x = np.frombuffer(pcm, "<i2").astype(np.float32) / 32768
+    audio = np.interp(np.arange(0, len(x), 0.5), np.arange(len(x)), x).astype(np.float32)  # Whisper takes 16 kHz
+    # Beam search with the digit words as the prompt heard digits best on phone audio; temperature 0 and the
+    # token cap bound the time when it hears nothing clear (32 digit words are about 100 tokens).
+    segments, _ = model.transcribe(audio, language="cs", beam_size=5, temperature=0.0, max_new_tokens=128,
+                                   initial_prompt="nula, jedna, dva, tři, čtyři, pět, šest, sedm, osm, devět",
+                                   vad_filter=False, without_timestamps=True)
+    digits = ""
+    for word in re.findall(r"\d|[^\W\d]+", " ".join(segment.text for segment in segments).lower()):
+        if word.isdigit():
+            digits += word
+        elif close := difflib.get_close_matches(word, PIN_DIGIT_WORDS, n=1, cutoff=0.7):
+            digits += str(PIN_DIGIT_WORDS[close[0]])
+    return digits
+
+
 @dataclass
 class Outbound:
     """A call Hermes placed that rings or waits for the PIN; its messages are said after the PIN."""
@@ -121,7 +143,7 @@ class Call:
         self.spoken: set[str] = set()  # utterances whose reply audio reached the call
         self.generation = 0  # bumped by *: speech still being recognised is dropped
         self.dtmf: asyncio.Queue[str] = asyncio.Queue()
-        self.detector: Optional[SpeechDetector] = None  # set once the PIN was entered
+        self.detector: Optional[SpeechDetector] = None  # set once the PIN was entered, and during it if spoken
         self.on_speech_start: Callable[[], bool] = lambda: False  # returns whether it talks over Hermes
         self.talks_over = False
         self.on_star: Callable[[], None] = lambda: None
@@ -135,6 +157,13 @@ class Call:
     def play(self, pcm: bytes, voice: bool = False) -> None:
         self.playout += pcm
         self.voice = self.voice or voice
+
+    def drop_utterances(self) -> None:
+        """Forget speech not handled yet, but keep the end-of-call marker."""
+        while not self.utterances.empty():
+            if self.utterances.get_nowait() is None:
+                self.utterances.put_nowait(None)
+                break
 
     def owns_output(self, utterance_id: Optional[str]) -> bool:
         return utterance_id == self.latest and utterance_id not in self.muted
@@ -176,7 +205,7 @@ class Call:
                             self.utterances.put_nowait((utterance, self.talks_over))
                         elif was_speaking and not self.detector.in_speech and self.talks_over:
                             self.holds -= 1  # too short to be anything
-                    elif kind == DTMF and payload == b"*" and self.detector is not None:
+                    elif kind == DTMF and payload == b"*" and self.user_id is not None and self.detector is not None:
                         self.on_star()
                     elif kind == DTMF:
                         self.dtmf.put_nowait(payload.decode(errors="ignore"))
@@ -235,13 +264,15 @@ class PhoneAdapter(BasePlatformAdapter):
                      "strict_threshold": float(settings["barge_vad"]), "strict_windows": int(settings["barge_windows"])}
         self._stt_timeout = float(settings["stt_timeout"])
         self._stt_fallback = settings["stt_fallback"]
+        self._spoken_pin = settings["spoken_pin"] is True
+        self._pin_model = None  # the spoken PIN's Whisper model, once loaded
         self._stt_pool: Optional[ThreadPoolExecutor] = None
         self._wrong_pins: list[float] = []  # when a wrong PIN was typed, on any call
         self._calls: dict[str, Call] = {}  # calls past the PIN, by chat id
         self._server: Optional[asyncio.base_events.Server] = None
         self._warm_task: Optional[asyncio.Task] = None
         self._connections: set[asyncio.Task] = set()  # one per AudioSocket connection, PIN or not
-        self._tasks: set[asyncio.Task] = set()  # * handling started from the call's read loop
+        self._tasks: set[asyncio.Task] = set()  # * handling started from the call's read loop, the PIN model load
         self.port: Optional[int] = None
 
     # --- lifecycle
@@ -267,6 +298,8 @@ class PhoneAdapter(BasePlatformAdapter):
         # Its own workers: a recognition left running after the cutoff must not hold up speech synthesis.
         self._stt_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="phone-stt")
         self._warm_task = asyncio.create_task(self._warm_voice())
+        if self._spoken_pin:
+            self._spawn(asyncio.to_thread(self._load_pin_model))
         self._mark_connected()
         logger.info("phone: waiting for Asterisk on AudioSocket %s:%s (Asterisk runs in Docker, set it up with %s)",
                     self._host, self.port, Path(__file__).with_name("install-asterisk.sh"))
@@ -291,6 +324,15 @@ class PhoneAdapter(BasePlatformAdapter):
         if self._stt_pool:
             self._stt_pool.shutdown(wait=False, cancel_futures=True)
 
+    def _load_pin_model(self) -> None:
+        """Loads the spoken PIN's Whisper model once and keeps it: loading it per call saved no memory, as the
+        process keeps what the model freed. Until it is loaded, or if it cannot load, calls ask for the keypad."""
+        try:
+            from faster_whisper import WhisperModel
+            self._pin_model = WhisperModel("base", device="cpu", compute_type="int8", cpu_threads=2)
+        except Exception:
+            logger.error("phone: cannot load the local Whisper model for the spoken PIN", exc_info=True)
+
     @staticmethod
     async def _warm_voice() -> None:
         """Download/load the Piper voice at startup instead of during the first call."""
@@ -314,6 +356,8 @@ class PhoneAdapter(BasePlatformAdapter):
                 call.deliveries = outbound.messages  # deliveries until the PIN join it
             tasks = [asyncio.create_task(call.write_paced()), asyncio.create_task(call.read_frames())]
             call.user_id = await self._admit(call, outbound is not None)
+            call.detector = None  # nothing said during the PIN ever goes to Hermes's speech recognition
+            call.drop_utterances()
             if call.user_id is None:
                 await self._speak(call, self._phrases["bye"])
                 await call.hang_up()
@@ -409,10 +453,7 @@ class PhoneAdapter(BasePlatformAdapter):
         call.generation += 1
         call.detector.drop()
         call.holds = 0  # everything the caller said so far is dropped
-        while not call.utterances.empty():
-            if call.utterances.get_nowait() is None:  # keep the end-of-call marker
-                call.utterances.put_nowait(None)
-                break
+        call.drop_utterances()
         call.silence()
         call.deliveries.clear()
         call.play(STOP_TONE)
@@ -478,12 +519,22 @@ class PhoneAdapter(BasePlatformAdapter):
                 return None
         if self._pin_locked(call):
             return None
-        await self._speak(call, self._phrases["pin"])
+        model = self._pin_model  # for the whole PIN of this call, even if it loads meanwhile
+        if model:
+            call.detector = await asyncio.to_thread(SpeechDetector, **self._vad)
+        await self._speak(call, self._phrases["pin_spoken" if model else "pin"])
         for attempt in range(PIN_ATTEMPTS):
-            entered = await self._read_pin(call)
+            entered = await self._read_pin(call, model)
             if call.closed.is_set() or self._pin_locked(call):  # also guesses on calls that waited meanwhile
                 return None
             if hmac.compare_digest(entered.encode(), self._pin.encode()):
+                # With the spoken PIN the call goes on once the caller is silent: what they are still saying may
+                # be the PIN (said again, or while typing it), which must not reach Hermes. Never silent: no call.
+                pause_by = time.monotonic() + PIN_TIMEOUT_S
+                while call.detector and not call.detector.silent:
+                    if call.closed.is_set() or time.monotonic() > pause_by:
+                        return None
+                    await asyncio.sleep(0.02)
                 return entry
             logger.warning("phone: wrong PIN on call %s", call.id[:8])
             if entered:
@@ -528,17 +579,36 @@ class PhoneAdapter(BasePlatformAdapter):
             or (9 <= len(number) < len(allowed) and allowed.endswith(number)))), None)
 
     @staticmethod
-    async def _read_pin(call: Call) -> str:
-        """Keys up to ``#``; whatever was typed when the time is up or the caller hung up."""
+    async def _read_pin(call: Call, model) -> str:
+        """Keys up to ``#``; whatever was typed when the time is up or the caller hung up. With the spoken PIN's
+        ``model``, speech before any key is the attempt: the digits it recognised, never logged."""
         entered, deadline = "", time.monotonic() + PIN_TIMEOUT_S
-        while (left := deadline - time.monotonic()) > 0:
-            try:
-                key = await asyncio.wait_for(call.dtmf.get(), timeout=left)
-            except asyncio.TimeoutError:
-                break
-            if key in ("#", ""):
-                break
-            entered = (entered + key)[:32]
+        key = asyncio.ensure_future(call.dtmf.get())
+        speech = asyncio.ensure_future(call.utterances.get()) if model else None
+        try:
+            while (left := deadline - time.monotonic()) > 0:
+                done, _ = await asyncio.wait({key, speech} - {None}, timeout=left,
+                                             return_when=asyncio.FIRST_COMPLETED)
+                if key in done:
+                    if key.result() in ("#", ""):
+                        break
+                    entered = (entered + key.result())[:32]
+                    key = asyncio.ensure_future(call.dtmf.get())
+                    if speech:  # typing: the keypad decides
+                        speech.cancel()
+                        speech = None
+                elif speech in done:
+                    key.cancel()  # a key typed meanwhile stays for the next try
+                    if speech.result() is None:
+                        break
+                    digits = await asyncio.to_thread(_spoken_digits, model, speech.result()[0])
+                    return digits if len(digits) >= 4 else ""  # fewer than any PIN: noise, or no PIN said
+                else:
+                    break
+        finally:
+            key.cancel()
+            if speech:
+                speech.cancel()
         return entered
 
     # --- inbound

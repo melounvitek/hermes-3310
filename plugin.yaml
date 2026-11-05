@@ -10,7 +10,7 @@ description: >
 # Labels (prompt) and help (description) of the Hermes 3310 card on the Desktop's Messaging page.
 requires_env:
   - name: PHONE_PIN
-    description: "Digits every caller types on the keypad, followed by #, before Hermes listens; 4 to 32 digits, better 6 or more"
+    description: "Digits every caller types on the keypad, followed by # (or says, with Spoken PIN on), before Hermes listens; 4 to 32 digits, better 6 or more"
     prompt: "PIN"
     password: true
     secret: true
@@ -51,10 +51,19 @@ config_schema:
     default: ""
     label: "Language you speak"
     description: "Language code for the speech recognition on calls, e.g. cs; empty: Hermes's speech-to-text settings decide"
+  spoken_pin:
+    type: bool
+    default: false
+    label: "Spoken PIN"
+    description: "Callers may also say the PIN, digit by digit in Czech, instead of typing it. It is recognised on this machine (faster-whisper base, about 250 MB of memory while on) and never passed to Hermes; anyone who hears it can use it"
   phrase_pin:
     default: "Enter your PIN, then press the hash key."
     label: "PIN prompt"
     description: "Said when a call starts"
+  phrase_pin_spoken:
+    default: "Type your PIN and press the hash key, or say it."
+    label: "PIN prompt with spoken PIN"
+    description: "Said instead of the PIN prompt when Spoken PIN is on"
   phrase_wrong_pin:
     default: "Wrong PIN."
     label: "Wrong PIN"

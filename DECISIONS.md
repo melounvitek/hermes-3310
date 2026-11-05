@@ -28,13 +28,24 @@ Axfone, VOIPEX, WMS and Savvy document plain registration (checked 2026-10-27, n
 
 ## PIN on every incoming call, plus a caller allow-list
 Caller ID can be spoofed and the line gives full access to Hermes. The PIN is entered on the keypad (DTMF, ending
-with #) and checked inside the adapter before any speech is transcribed, so an unauthenticated call never
-reaches Hermes. Calls from Hermes go only to the user's own number, which is fixed in the config; the remaining
+with #), or said (see the spoken PIN below), and checked inside the adapter before any speech goes to Hermes's
+speech recognition, so an unauthenticated call never reaches Hermes. Calls from Hermes go only to the user's own number, which is fixed in the config; the remaining
 risk there is who picks up (an unlocked phone, voicemail, forwarding), so those calls ask for the PIN too.
+
+## Spoken PIN: optional, recognised locally with Whisper base (2026-11-05)
+Typing the PIN on every call is tedious, so it may also be said (`spoken_pin`, off by default). It is the whole
+PIN, so anyone in earshot can reuse it; no voice biometrics. faster-whisper on this machine recognises it and
+the adapter compares it, so its audio never leaves the host, reaches Hermes or is logged. On 50 synthetic
+4-digit PINs (one Piper voice over 8 kHz a-law, not real callers) base got 82 to 84% in 1.5 to 2 s (6 to 10 s
+under full CPU load), tiny 66 to 70%, small no better than base in 4 to 5 s, large-v3-turbo 98% in 20 to 25 s.
+Beam search, the digit words as the prompt and matching a misheard word to the closest digit word helped most.
+The model stays loaded (about 250 MB in the gateway after a few calls): loading it for each call saved nothing,
+as the process kept the memory the model freed, and made each spoken PIN a second slower. The digit words are
+Czech, so the spoken PIN is Czech only.
 
 ## Czech is a hard requirement
 Speech recognition language, a Czech Piper voice (cs_CZ-jirka) and a spoken-style Czech prompt. All of it is
-configuration, not code, so other languages work the same way.
+configuration, not code, so other languages work the same way, except the spoken PIN's Czech digit words.
 
 ## OpenAI gpt-transcribe for speech recognition (October 2026)
 On 14 real phone sentences local Whisper turbo got about half right in 9 to 26 s; gpt-transcribe got about 12

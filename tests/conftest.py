@@ -31,7 +31,7 @@ VOICE = Path(os.environ.get("PHONE_TEST_VOICE", "~/.hermes/cache/piper-voices/cs
 FRAME = 320  # 20 ms of 8 kHz int16 mono
 PIN, CALLER = "4321", "420777000111"
 HOME_NUMBER = "00420777000111"  # CALLER in the provider's dial format: the number Hermes calls
-SHORT_PHRASES = {"pin": "Kód.", "wrong_pin": "Špatně.", "bye": "Nashle.", "hello": "Ahoj.",
+SHORT_PHRASES = {"pin": "Kód.", "pin_spoken": "Kód, nebo ho řekni.", "wrong_pin": "Špatně.", "bye": "Nashle.", "hello": "Ahoj.",
                  "not_understood": "Nerozuměl jsem.", "stopped": "Stop.", "denied": "Zamítnuto.", "missed": "Volal jsem."}
 
 

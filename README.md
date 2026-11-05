@@ -71,6 +71,7 @@ plugins:
         language: cs
         instructions: "Odpovídej česky, mluveným stylem."
         phrase_pin: "Zadej kód a mřížku."
+        phrase_pin_spoken: "Zadej kód a mřížku, nebo ho řekni."
         phrase_wrong_pin: "Špatný kód."
         phrase_hello: "Ahoj, tady Hermes. Co potřebuješ?"
         phrase_bye: "Na shledanou."
@@ -135,7 +136,7 @@ everything else applies after a gateway restart.
 
 | Variable | Meaning |
 |---|---|
-| `PHONE_PIN` | keypad PIN, required |
+| `PHONE_PIN` | the PIN, typed (or said, with `spoken_pin`), required |
 | `PHONE_ALLOWED_CALLERS` | allowed caller numbers, comma-separated, required |
 | `SIP_SERVER`, `SIP_USER`, `SIP_PASSWORD` | the SIP account, required |
 | `PHONE_HOME_NUMBER` | the number Hermes calls you on, digits as your provider dials them; optional |
@@ -149,6 +150,7 @@ The plugin's page under the Desktop's **Settings → Plugins**, stored in `plugi
 |---|---|---|
 | `language` | – | the language you speak (`cs`), for speech recognition on calls; else Hermes's STT settings decide |
 | `instructions` | – | added to what Hermes is told on calls, e.g. the language to answer in |
+| `spoken_pin` | off | the PIN may also be said, digit by digit in Czech (see [Security](#security)); needs faster-whisper, ~250 MB RAM while on |
 | `phrase_pin` … `phrase_missed` | English | the texts the plugin speaks itself (see the example above) |
 | `stt_timeout` | `5` | seconds before recognition is given up |
 | `stt_fallback` | `none` | `local`: use local Whisper when the cloud fails or is slow (needs faster-whisper, ~1 GB RAM); it hears in Hermes's `stt.local.language` or `stt.language`, not `language` |
@@ -171,9 +173,14 @@ faster model for voice turns can be set as `auxiliary.voice_chat` (Desktop: Sett
 
 ## Security
 
-- Every call needs the PIN, checked by the plugin before any speech is recognised or anything reaches Hermes.
+- Every call needs the PIN, checked by the plugin before anything reaches Hermes or its speech recognition.
   Caller ID can be spoofed, so the allow-list alone is not enough. The gateway re-checks the caller against the
   same list.
+- With `spoken_pin` on, the PIN may be said instead of typed, so anyone who hears you can use it. It is
+  recognised on this machine (faster-whisper `base`, kept loaded while it is on) and compared in the plugin;
+  the audio and the text are then dropped, never logged or passed to Hermes. A spoken PIN counts like a typed
+  one; speech with fewer than 4 digits uses a try but does not count toward the lockout. After the PIN the call
+  goes on once you pause, so nothing you are still saying reaches Hermes (no pause within 20 s ends the call).
 - The PIN must be 4 to 32 digits; use 6 or more. A call gets 3 tries. After 10 wrong PINs within an hour, on
   any calls, the line answers nobody (you included) until that hour has passed; a gateway restart clears it.
 - The plugin refuses to start without a PIN and an allow-list. AudioSocket has no authentication, so the plugin
@@ -190,8 +197,8 @@ faster model for voice turns can be set as `auxiliary.voice_chat` (Desktop: Sett
 ## Privacy
 
 - SIP and the call audio are not encrypted, like most phone lines.
-- What you say is sent to your Hermes speech-to-text provider (OpenAI with the settings above), and the
-  conversation is stored in Hermes like any other chat.
+- What you say after the PIN is sent to your Hermes speech-to-text provider (OpenAI with the settings above),
+  and the conversation is stored in Hermes like any other chat. A spoken PIN never leaves this machine.
 - The plugin logs only the last three digits of a number; Asterisk's own log in its container has full caller
   numbers.
 
@@ -209,8 +216,8 @@ faster model for voice turns can be set as `auxiliary.voice_chat` (Desktop: Sett
 ~/.hermes/hermes-agent/venv/bin/python -m pytest -q          # about 7 minutes
 ```
 
-- The tests use Hermes's real plugin loader and streaming-speech pipeline; only the LLM and speech recognition
-  are faked.
+- The tests use Hermes's real plugin loader and streaming-speech pipeline; only the LLM and Hermes's speech
+  recognition are faked (the spoken-PIN tests run the local Whisper model).
 - They run in the Python environment of a Hermes Agent checkout (`HERMES_AGENT_DIR`, default
   `~/.hermes/hermes-agent`) with its development extras (pytest, pytest-asyncio, pytest-timeout).
 - Tests that speak need the Piper voice in `PHONE_TEST_VOICE` (default

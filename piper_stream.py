@@ -60,12 +60,14 @@ class PiperStream(TTSProvider):
         meta = self._voice_metadata()
         return meta["audio"]["sample_rate"] if meta else None
 
-    def stream(self, text, *, voice=None, model=None, format="pcm", speed=None, **extra):
+    def stream(self, text, *, voice=None, model=None, format="pcm", speed=None, as_written=False, **extra):
+        """``as_written``: no Czech words put back, e.g. for web addresses."""
         if format != "pcm":
             raise NotImplementedError("piper_stream streams raw PCM only")
         piper_voice, piper = self._load()
         with self._lock:
-            chunks = list(piper_voice.synthesize(self._localized(text), syn_config=_synthesis_config(piper)))
+            chunks = list(piper_voice.synthesize(text if as_written else self._localized(text),
+                                                 syn_config=_synthesis_config(piper)))
         for chunk in chunks:
             yield chunk.audio_int16_bytes
 

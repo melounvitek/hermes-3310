@@ -729,15 +729,16 @@ class PhoneAdapter(BasePlatformAdapter):
             call.play(pcm, voice=True)
 
     @staticmethod
-    async def _synthesize(text: str, clean: bool = True) -> bytes:
-        """``text`` spoken as call audio; ``clean``: first made fit for speech by Hermes's text cleaner."""
+    async def _synthesize(text: str, as_written: bool = False) -> bytes:
+        """``text`` spoken as call audio, made fit for speech by Hermes's text cleaner and the voice unless
+        ``as_written``."""
         from tools.tts_text_normalize import prepare_spoken_text
         tts = _tts()
-        if clean:
+        if not as_written:
             text = prepare_spoken_text(text, max_chars=None)
         if tts is None or not text:
             return b""
-        pcm = await asyncio.to_thread(lambda: b"".join(tts.stream(text, format="pcm")))
+        pcm = await asyncio.to_thread(lambda: b"".join(tts.stream(text, format="pcm", as_written=as_written)))
         return to_call_rate(pcm, tts.stream_sample_rate)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -818,9 +819,10 @@ class PhoneAdapter(BasePlatformAdapter):
             return None
         parts = [await self._synthesize(self._phrases["approval"]), described]
         if hosts := _web_hosts(prompt.command):
-            # As written: Hermes's text cleaner drops what looks like code, such as api-v2.example.com.
+            # As written: Hermes's text cleaner drops what looks like code (api-v2.example.com), and the Czech
+            # voice would turn the "and" of research-and-dev.example into "a".
             parts.append(await self._synthesize(f"{self._phrases['approval_addresses']} {', '.join(hosts)}.",
-                                                clean=False))
+                                                as_written=True))
         if prompt.smart_denied:
             parts.append(await self._synthesize(self._phrases["approval_dangerous"]))
         parts.append(await self._synthesize(self._phrases["approval_keys"]))

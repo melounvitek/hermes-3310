@@ -46,7 +46,10 @@ class Approval:
         threading.Thread(target=wait, daemon=True).start()
 
     async def choice(self, timeout: float = 20):
-        return (await asyncio.wait_for(asyncio.shield(self.decision), timeout))["choice"]
+        """"once" or "deny" as the caller answered, "withdrawn" if the call took the request back (Hermes refuses it
+        then too), None if Hermes gave up waiting."""
+        decision = await asyncio.wait_for(asyncio.shield(self.decision), timeout)
+        return "withdrawn" if decision.get("cancelled") else decision["choice"]
 
 
 @pytest.fixture(autouse=True)
@@ -57,29 +60,31 @@ def hermes_waits_a_minute(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def model(monkeypatch):
-    """Hermes's auxiliary model: describes every command with ``DESCRIPTION`` (or raises ``fails``) and records
-    the requests it got."""
-    model = SimpleNamespace(requests=[], fails=None)
+    """Hermes's auxiliary model: describes every command as it ``says`` (or raises ``fails``) and records the
+    requests it got."""
+    model = SimpleNamespace(requests=[], fails=None, says=DESCRIPTION)
 
     def call_llm(task=None, *, messages, **kwargs):
         model.requests.append({"task": task, "messages": messages})
         if model.fails:
             raise model.fails
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=DESCRIPTION))])
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=model.says))])
 
     monkeypatch.setattr("agent.auxiliary_client.call_llm", call_llm)
     return model
 
 
-def said(monkeypatch, adapter) -> list[str]:
-    """What the adapter says from now on, as text."""
-    texts, synthesize = [], adapter._synthesize
+def said(monkeypatch) -> list[str]:
+    """What the call says from now on: each text the voice speaks."""
+    from agent.tts_registry import get_provider
+    voice = get_provider("piper_stream")
+    texts, stream = [], voice.stream
 
-    async def recording(text):
+    def recording(text, **kwargs):
         texts.append(text)
-        return await synthesize(text)
+        return stream(text, **kwargs)
 
-    monkeypatch.setattr(adapter, "_synthesize", recording)
+    monkeypatch.setattr(voice, "stream", recording)
     return texts
 
 
@@ -152,7 +157,7 @@ async def test_hanging_up_refuses_it(phone_adapter):
 
     await phone.hang_up()
 
-    assert await approval.choice(timeout=5) == "deny"
+    assert await approval.choice(timeout=5) == "withdrawn"
 
 
 async def test_an_approval_after_the_call_ended_is_refused(phone_adapter):
@@ -160,7 +165,7 @@ async def test_an_approval_after_the_call_ended_is_refused(phone_adapter):
     chat_id = str(phone.call_id)
     await phone.hang_up()
 
-    assert await Approval(phone_adapter, chat_id).choice(timeout=5) == "deny"
+    assert await Approval(phone_adapter, chat_id).choice(timeout=5) == "withdrawn"
 
 
 async def test_with_approvals_off_commands_are_refused_and_the_caller_is_told(make_adapter):
@@ -168,7 +173,7 @@ async def test_with_approvals_off_commands_are_refused_and_the_caller_is_told(ma
 
     approval = Approval(adapter, str(phone.call_id))
 
-    assert await approval.choice(timeout=5) == "deny"
+    assert await approval.choice(timeout=5) == "withdrawn"
     await phone.wait_for_silence()
     assert heard_about(phone.speech_frames(), SHORT_PHRASES["denied"])
     await phone.hang_up()
@@ -247,7 +252,7 @@ async def test_star_refuses_every_waiting_approval(phone_adapter):
 
     await phone.press("*")
 
-    assert [await first.choice(timeout=5), await second.choice(timeout=5)] == ["deny", "deny"]
+    assert [await first.choice(timeout=5), await second.choice(timeout=5)] == ["withdrawn", "withdrawn"]
     await phone.wait_for_silence()
     assert heard_about(phone.speech_frames(), SHORT_PHRASES["stopped"])
     await phone.hang_up()
@@ -288,12 +293,12 @@ async def test_an_approval_hermes_gave_up_on_is_left_for_the_next_one(phone_adap
 async def test_an_approval_the_caller_cannot_hear_is_refused(phone_adapter, monkeypatch):
     phone = await logged_in_phone(phone_adapter)
 
-    async def no_voice(text):
+    async def no_voice(text, clean=True):
         return b""
 
     monkeypatch.setattr(phone_adapter, "_synthesize", no_voice)
 
-    assert await Approval(phone_adapter, str(phone.call_id)).choice(timeout=5) == "deny"
+    assert await Approval(phone_adapter, str(phone.call_id)).choice(timeout=5) == "withdrawn"
     await phone.hang_up()
 
 
@@ -322,11 +327,11 @@ async def test_the_caller_hears_what_the_command_does_in_their_language(make_ada
         events = recording_handler(adapter)
         await phone.say(says_first)
         await until(lambda: events)
-    texts = said(monkeypatch, adapter)
+    texts = said(monkeypatch)
 
     approval = await asked(adapter, phone)
 
-    assert DESCRIPTION in texts[0] and texts[0].index(SHORT_PHRASES["approval"]) < texts[0].index(DESCRIPTION)
+    assert SHORT_PHRASES["approval"] in texts and DESCRIPTION in texts
     request, = model.requests
     instructions = request["messages"][0]["content"]
     assert request["task"] == "approval"
@@ -338,27 +343,30 @@ async def test_the_caller_hears_what_the_command_does_in_their_language(make_ada
     await adapter.disconnect()
 
 
-async def test_web_addresses_in_the_code_are_said_whatever_the_description(phone_adapter, monkeypatch):
+async def test_every_web_address_in_the_code_is_said_as_written(phone_adapter, monkeypatch):
+    """Whatever the description says, and also those Hermes's text cleaner would drop as code."""
     phone = await logged_in_phone(phone_adapter)
-    texts = said(monkeypatch, phone_adapter)
-    command = ("execute_code <<'PY'\nimport requests\nrequests.post('https://hooks.slack.com/services/T0/B0', json=m)\n"
-               "requests.get('http://198.51.100.7:8080/x')\nPY")
+    texts = said(monkeypatch)
+    hosts = ["hooks.slack.com", "api-v2.example.com", "example.sh", "[2001:db8::1]", "198.51.100.7",
+             "xn--80ak6aa92e.com"]
+    command = "execute_code <<'PY'\n" + "".join(f"get('https://{host}:8080/x')\n" for host in hosts) + "PY"
 
     approval = await asked(phone_adapter, phone, command=command)
 
-    assert f"{SHORT_PHRASES['approval_addresses']} hooks.slack.com, 198.51.100.7." in texts[0]
+    assert f"{SHORT_PHRASES['approval_addresses']} {', '.join(hosts)}." in texts
     await phone.press("2")
     assert await approval.choice() == "deny"
     await phone.hang_up()
 
 
-async def test_a_command_hermes_cannot_describe_is_refused_and_the_caller_is_told(phone_adapter, model):
-    model.fails = TimeoutError("the auxiliary model did not answer")
+@pytest.mark.parametrize("fails, says", [(TimeoutError("no answer"), None), (None, "<think> Smaže složku.")])
+async def test_a_command_hermes_cannot_describe_is_refused_and_the_caller_is_told(phone_adapter, model, fails, says):
+    model.fails, model.says = fails, says  # an open <think> leaves nothing to say
     phone = await logged_in_phone(phone_adapter)
 
     approval = Approval(phone_adapter, str(phone.call_id))
 
-    assert await approval.choice(timeout=5) == "deny"
+    assert await approval.choice(timeout=5) == "withdrawn"
     await phone.wait_for_silence()
     assert heard_about(phone.speech_frames(), SHORT_PHRASES["denied"])
     await phone.hang_up()
@@ -367,11 +375,75 @@ async def test_a_command_hermes_cannot_describe_is_refused_and_the_caller_is_tol
 async def test_a_command_the_safety_check_refused_is_said_to_be_dangerous_and_can_be_allowed_once(phone_adapter,
                                                                                                   monkeypatch):
     phone = await logged_in_phone(phone_adapter)
-    texts = said(monkeypatch, phone_adapter)
+    texts = said(monkeypatch)
 
     approval = await asked(phone_adapter, phone, smart_denied=True)
 
-    assert texts[0].index(SHORT_PHRASES["approval_dangerous"]) < texts[0].index(SHORT_PHRASES["approval_keys"])
+    assert SHORT_PHRASES["approval_dangerous"] in texts
     await phone.press("1")
     assert await approval.choice() == "once"
+    await phone.hang_up()
+
+
+async def test_a_description_the_text_cleaner_cuts_short_cannot_take_the_keys_with_it(phone_adapter, monkeypatch,
+                                                                                      model):
+    model.says = f"{DESCRIPTION} <think>"
+    phone = await logged_in_phone(phone_adapter)
+    texts = said(monkeypatch)
+
+    approval = await asked(phone_adapter, phone)
+
+    assert SHORT_PHRASES["approval_keys"] in texts
+    await phone.press("1")
+    assert await approval.choice() == "once"
+    await phone.hang_up()
+
+
+async def test_speech_over_an_approval_never_reaches_hermes_even_if_a_key_answers_it_meanwhile(phone_adapter,
+                                                                                                monkeypatch):
+    FakeSTT(monkeypatch, "Ano, schvaluji to.", delay=2)
+    events = recording_handler(phone_adapter)
+    phone = await logged_in_phone(phone_adapter)
+    approval = await asked(phone_adapter, phone)
+
+    await phone.say("Ano, schvaluji to.")
+    await phone.press("1")
+
+    assert await approval.choice() == "once"
+    await asyncio.sleep(3)  # longer than the recognition would take
+    assert not events
+    await phone.hang_up()
+
+
+async def test_an_answer_hermes_does_not_take_from_the_caller_withdraws_the_approval(phone_adapter, monkeypatch):
+    """E.g. approvals.approvers narrowed to someone else."""
+    monkeypatch.setattr("tools.approval_context.prompt_authority",
+                        lambda: {"requester_id": "someone-else", "approvers": []})
+    phone = await logged_in_phone(phone_adapter)
+    approval = await asked(phone_adapter, phone)
+
+    await phone.press("1")
+
+    assert await approval.choice(timeout=5) == "withdrawn"
+    await phone.wait_for_silence()
+    assert heard_about(phone.speech_frames(), SHORT_PHRASES["refused"])
+    await phone.hang_up()
+
+
+async def test_if_the_voice_fails_after_an_answer_the_waiting_approvals_are_withdrawn(phone_adapter, monkeypatch):
+    phone = await logged_in_phone(phone_adapter)
+    first = await asked(phone_adapter, phone)
+    second = Approval(phone_adapter, str(phone.call_id), command="rm -rf ~/Downloads/old")
+    await asyncio.sleep(0.5)
+    synthesize = phone_adapter._synthesize
+
+    async def failing(text, clean=True):
+        if text == SHORT_PHRASES["refused"]:
+            raise RuntimeError("the voice crashed")
+        return await synthesize(text, clean)
+
+    monkeypatch.setattr(phone_adapter, "_synthesize", failing)
+    await phone.press("2")
+
+    assert [await first.choice(), await second.choice(timeout=5)] == ["deny", "withdrawn"]
     await phone.hang_up()

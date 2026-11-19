@@ -56,6 +56,16 @@ config_schema:
     default: false
     label: "Spoken PIN"
     description: "Callers may also say the PIN, digit by digit in Czech, instead of typing it. It is recognised on this machine and never passed to Hermes; anyone who hears it can use it. Needs faster-whisper: run hermes pm install --extra stt-whisper, then restart the gateway (the model, 142 MB, downloads at the first start; about 250 MB of memory while on)"
+  approvals:
+    choices: [keypad, deny]
+    default: keypad
+    label: "Approvals on calls"
+    description: "keypad: when a command needs your OK, the call says what Hermes wants to do and you press 1 to allow it once or 2 to refuse it (speech never counts); deny: such commands are always refused on calls"
+  approval_timeout:
+    type: float
+    default: 120
+    label: "Approval timeout"
+    description: "Seconds to wait for your key after an approval was read; no key refuses it. Hermes's own approvals.timeout (300 s by default), counted from when it asked, still applies"
   phrase_pin:
     default: "Enter your PIN, then press the hash key."
     label: "PIN prompt"
@@ -85,7 +95,23 @@ config_schema:
   phrase_denied:
     default: "That needs an approval, which is not possible on the phone."
     label: "Approval denied"
-    description: "Said when a command needs your approval, which the phone always denies"
+    description: "Said when a command needs your approval but cannot be asked on the call (approvals are off), so it is refused"
+  phrase_approval:
+    default: "Hermes needs your OK for this."
+    label: "Approval"
+    description: "Said when a command needs your approval, before what it does"
+  phrase_approval_keys:
+    default: "Press 1 to allow it once, or 2 to refuse."
+    label: "Approval keys"
+    description: "Said after an approval, again when you talk or press another key, and every 30 seconds"
+  phrase_approved:
+    default: "Allowed."
+    label: "Approved"
+    description: "Said after you press 1"
+  phrase_refused:
+    default: "Refused."
+    label: "Refused"
+    description: "Said after you press 2, or when no key came in time"
   phrase_missed:
     default: "Earlier I tried to call you."
     label: "Missed call"

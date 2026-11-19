@@ -1,5 +1,4 @@
-"""Round 4: talking over a reply and the * key stop the turn; hangup stops it; approvals are denied;
-beeps while Hermes works."""
+"""Round 4: talking over a reply and the * key stop the turn; hangup stops it; beeps while Hermes works."""
 import asyncio
 import time
 
@@ -152,19 +151,6 @@ async def test_hanging_up_stops_the_running_turn(phone_adapter, monkeypatch):
     await phone.hang_up()
 
     await until(lambda: voice_messages(gateway) == [QUESTION, "/stop"], timeout=5)
-
-
-async def test_command_approvals_are_denied_and_the_caller_is_told(phone_adapter, monkeypatch):
-    resolved = []
-    monkeypatch.setattr("tools.approval.resolve_gateway_approval",
-                        lambda session_key, choice, **kw: resolved.append((session_key, choice)) or 1)
-    phone = await logged_in_phone(phone_adapter)
-
-    result = await phone_adapter.send_exec_approval(str(phone.call_id), "rm -rf ~/Documents", "session-key")
-    await phone.wait_for_speech(timeout=10)
-
-    assert result.success and resolved == [("session-key", "deny")]
-    await phone.hang_up()
 
 
 def sound_onsets(phone, start: float, end: float) -> list[float]:

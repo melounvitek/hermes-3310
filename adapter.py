@@ -431,6 +431,11 @@ class PhoneAdapter(BasePlatformAdapter):
                         len(pcm) / SR / 2, time.monotonic() - started)
             if generation != call.generation:
                 continue  # * was pressed meanwhile (it dropped this speech and its hold)
+            if call.approvals:  # only keys answer an approval: speech is dropped, and they are said again
+                call.holds -= talks_over
+                if text and not is_garbage(text):
+                    await self._speak(call, self._phrases["approval_keys"])
+                continue
             if talks_over:
                 call.holds -= 1
                 if len(pcm) < SR * 2 or len(text.split()) < 2 or is_garbage(text):
@@ -465,6 +470,7 @@ class PhoneAdapter(BasePlatformAdapter):
         call.drop_utterances()
         call.silence()
         call.deliveries.clear()
+        self._refuse_approvals(call)
         call.play(STOP_TONE)
         if self._busy(call):
             await self._stop_turn(call)
@@ -634,7 +640,10 @@ class PhoneAdapter(BasePlatformAdapter):
         # Both ids are needed: Hermes serialises them separately and binds the source one
         # as HERMES_SESSION_MESSAGE_ID for the turn, which is how reply audio finds its utterance.
         # Delivered messages the caller heard are quoted as Hermes's own, so they stay in the call's history.
+        # A transcript never controls the gateway: Hermes would take a bare "yes" as the answer to a waiting
+        # approval, and only keys answer those.
         await self.handle_message(MessageEvent(text=text, message_type=MessageType.VOICE,
+                                               allow_gateway_control=False,
                                                source=self._call_source(call, utterance_id),
                                                message_id=utterance_id,
                                                reply_to_message_id=f"delivered-{utterance_id}" if heard else None,
@@ -803,8 +812,8 @@ class PhoneAdapter(BasePlatformAdapter):
                                                   actor_id=call.user_id if call else None, extra=self.config.extra))
 
     def _refuse_approvals(self, call: Call) -> None:
-        """Refuse all of the call's approvals (hang-up). A /stop ends the waits of a running turn, but not those
-        of work going on in the background."""
+        """Refuse all of the call's approvals (*, hang-up). A /stop ends the waits of a running turn, but not
+        those of work going on in the background."""
         for prompt in call.approvals:
             self._answer(call, prompt, "deny")
         call.approvals.clear()
@@ -867,7 +876,7 @@ class PhoneAdapter(BasePlatformAdapter):
         the caller not talking. A message is said only if the line is still quiet once it is ready."""
         def quiet() -> bool:
             return not (self._busy(call) or call.recognising or call.playout or call.detector.in_speech
-                        or call.holds)
+                        or call.holds or call.approvals)
 
         try:
             while call.deliveries and not call.closed.is_set():

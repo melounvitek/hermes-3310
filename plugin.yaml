@@ -95,11 +95,19 @@ config_schema:
   phrase_denied:
     default: "That needs an approval, which is not possible on the phone."
     label: "Approval denied"
-    description: "Said when a command needs your approval but cannot be asked on the call (approvals are off), so it is refused"
+    description: "Said when a command needs your approval but cannot be asked on the call (approvals are off, or Hermes could not say what it does), so it is refused"
   phrase_approval:
     default: "Hermes needs your OK for this."
     label: "Approval"
     description: "Said when a command needs your approval, before what it does"
+  phrase_approval_addresses:
+    default: "Addresses in it:"
+    label: "Approval addresses"
+    description: "Said before the web addresses written in the command, if it has any"
+  phrase_approval_dangerous:
+    default: "Hermes's safety check considers this dangerous."
+    label: "Approval danger"
+    description: "Said when Hermes's safety check refused the command; you may still allow it once"
   phrase_approval_keys:
     default: "Press 1 to allow it once, or 2 to refuse."
     label: "Approval keys"

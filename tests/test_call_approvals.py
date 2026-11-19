@@ -1,11 +1,14 @@
 """Commands that need the caller's OK: the call says what Hermes wants to do, and only the keypad answers.
 
 Approvals go through Hermes's real approval queue: a thread waits for the decision like the agent does, while
-the adapter gets the prompt the way the gateway hands it over (``send_exec_approval``)."""
+the adapter gets the prompt the way the gateway hands it over (``send_exec_approval``). Only the auxiliary
+model that describes the command is faked."""
 import asyncio
 import dataclasses
+import re
 import sys
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +16,7 @@ from conftest import SHORT_PHRASES, FakeSTT, deliver, logged_in_phone, until
 from test_outbound_calls import MESSAGE, heard_about, recording_handler
 
 COMMAND = "rm -rf ~/Documents/old"
+DESCRIPTION = "Smaže starou složku v Dokumentech."
 
 
 class Approval:
@@ -51,6 +55,34 @@ def hermes_waits_a_minute(monkeypatch):
     monkeypatch.setattr("tools.approval_context._get_approval_timeout", lambda: 60)
 
 
+@pytest.fixture(autouse=True)
+def model(monkeypatch):
+    """Hermes's auxiliary model: describes every command with ``DESCRIPTION`` (or raises ``fails``) and records
+    the requests it got."""
+    model = SimpleNamespace(requests=[], fails=None)
+
+    def call_llm(task=None, *, messages, **kwargs):
+        model.requests.append({"task": task, "messages": messages})
+        if model.fails:
+            raise model.fails
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=DESCRIPTION))])
+
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", call_llm)
+    return model
+
+
+def said(monkeypatch, adapter) -> list[str]:
+    """What the adapter says from now on, as text."""
+    texts, synthesize = [], adapter._synthesize
+
+    async def recording(text):
+        texts.append(text)
+        return await synthesize(text)
+
+    monkeypatch.setattr(adapter, "_synthesize", recording)
+    return texts
+
+
 async def calling(make_adapter, **settings):
     adapter = make_adapter(**settings)
     assert await adapter.connect()
@@ -59,6 +91,7 @@ async def calling(make_adapter, **settings):
 
 async def asked(adapter, phone, **flags) -> Approval:
     """An approval whose prompt the caller has heard to the end."""
+    phone.frames.clear()
     approval = Approval(adapter, str(phone.call_id), **flags)
     await phone.wait_for_silence()
     phone.frames.clear()
@@ -276,4 +309,69 @@ async def test_a_message_waits_until_the_approval_is_answered(phone_adapter):
     assert await approval.choice() == "once"
     await phone.wait_for_silence()
     assert heard_about(phone.speech_frames(), f"{SHORT_PHRASES['approved']} {MESSAGE}")
+    await phone.hang_up()
+
+
+@pytest.mark.parametrize("language, says_first", [("cs", None), ("", "Pošli to na Slack.")])
+async def test_the_caller_hears_what_the_command_does_in_their_language(make_adapter, monkeypatch, model, language,
+                                                                        says_first):
+    """The language set on the plugin page, else that of what the caller said last."""
+    adapter, phone = await calling(make_adapter, language=language)
+    if says_first:
+        FakeSTT(monkeypatch, says_first)
+        events = recording_handler(adapter)
+        await phone.say(says_first)
+        await until(lambda: events)
+    texts = said(monkeypatch, adapter)
+
+    approval = await asked(adapter, phone)
+
+    assert DESCRIPTION in texts[0] and texts[0].index(SHORT_PHRASES["approval"]) < texts[0].index(DESCRIPTION)
+    request, = model.requests
+    instructions = request["messages"][0]["content"]
+    assert request["task"] == "approval"
+    assert re.search(rf"(?<!\w){re.escape(language or says_first)}(?!\w)", instructions)
+    assert COMMAND in request["messages"][-1]["content"] and COMMAND not in instructions  # data, not instructions
+    await phone.press("1")
+    assert await approval.choice() == "once"
+    await phone.hang_up()
+    await adapter.disconnect()
+
+
+async def test_web_addresses_in_the_code_are_said_whatever_the_description(phone_adapter, monkeypatch):
+    phone = await logged_in_phone(phone_adapter)
+    texts = said(monkeypatch, phone_adapter)
+    command = ("execute_code <<'PY'\nimport requests\nrequests.post('https://hooks.slack.com/services/T0/B0', json=m)\n"
+               "requests.get('http://198.51.100.7:8080/x')\nPY")
+
+    approval = await asked(phone_adapter, phone, command=command)
+
+    assert f"{SHORT_PHRASES['approval_addresses']} hooks.slack.com, 198.51.100.7." in texts[0]
+    await phone.press("2")
+    assert await approval.choice() == "deny"
+    await phone.hang_up()
+
+
+async def test_a_command_hermes_cannot_describe_is_refused_and_the_caller_is_told(phone_adapter, model):
+    model.fails = TimeoutError("the auxiliary model did not answer")
+    phone = await logged_in_phone(phone_adapter)
+
+    approval = Approval(phone_adapter, str(phone.call_id))
+
+    assert await approval.choice(timeout=5) == "deny"
+    await phone.wait_for_silence()
+    assert heard_about(phone.speech_frames(), SHORT_PHRASES["denied"])
+    await phone.hang_up()
+
+
+async def test_a_command_the_safety_check_refused_is_said_to_be_dangerous_and_can_be_allowed_once(phone_adapter,
+                                                                                                  monkeypatch):
+    phone = await logged_in_phone(phone_adapter)
+    texts = said(monkeypatch, phone_adapter)
+
+    approval = await asked(phone_adapter, phone, smart_denied=True)
+
+    assert texts[0].index(SHORT_PHRASES["approval_dangerous"]) < texts[0].index(SHORT_PHRASES["approval_keys"])
+    await phone.press("1")
+    assert await approval.choice() == "once"
     await phone.hang_up()

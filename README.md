@@ -78,6 +78,12 @@ plugins:
         phrase_not_understood: "Nerozuměl jsem, zopakuj to prosím."
         phrase_stopped: "Zastaveno."
         phrase_denied: "Tohle potřebuje schválení, to po telefonu nejde."
+        phrase_approval: "Potřebuju tvoje schválení."
+        phrase_approval_addresses: "Adresy v tom:"
+        phrase_approval_dangerous: "Bezpečnostní kontrola to považuje za nebezpečné."
+        phrase_approval_keys: "Jedničkou to jednou povolíš, dvojkou odmítneš."
+        phrase_approved: "Povoleno."
+        phrase_refused: "Odmítnuto."
         phrase_missed: "Zkoušel jsem ti volat."
 platforms:
   phone:
@@ -106,8 +112,10 @@ systemctl --user set-property hermes-gateway.service CPUWeight=1000
 - Talk over Hermes to interrupt it: Hermes pauses as soon as you start, and what you said becomes the next
   question. If it was only a cough or noise, Hermes goes on where it stopped (after a pause of a second or two).
 - Press `*` to stop Hermes immediately; whatever you were saying is dropped too.
-- Commands that need an approval in Hermes are always denied on the phone (a spoken "yes" is too easy to give by
-  accident); Hermes says so.
+- When a command needs your OK in Hermes (smart approval asks for risky ones, like posting a message), the call
+  says in a sentence what it does, the web addresses in it, and whether Hermes's safety check finds it
+  dangerous. Press `1` to allow it once or `2` to refuse it. Talking or another key repeats the keys, which are
+  also said every 30 seconds. No key within two minutes, `*` or hanging up refuses it; speech never answers.
 
 ## Calls from Hermes
 
@@ -151,6 +159,8 @@ The plugin's page under the Desktop's **Settings → Plugins**, stored in `plugi
 | `language` | – | the language you speak (`cs`), for speech recognition on calls; else Hermes's STT settings decide |
 | `instructions` | – | added to what Hermes is told on calls, e.g. the language to answer in |
 | `spoken_pin` | off | the PIN may also be said, digit by digit in Czech (see [Security](#security)); needs faster-whisper (`hermes pm install --extra stt-whisper`), ~250 MB RAM while on |
+| `approvals` | `keypad` | `keypad`: allow commands that need your OK with the keypad (see [On the call](#on-the-call)); `deny`: refuse them on calls |
+| `approval_timeout` | `120` | seconds to wait for your key after an approval was said; Hermes's `approvals.timeout` (300 s from when it asked) applies too |
 | `phrase_pin` … `phrase_missed` | English | the texts the plugin speaks itself (see the example above) |
 | `stt_timeout` | `5` | seconds before recognition is given up |
 | `stt_fallback` | `none` | `local`: use local Whisper when the cloud fails or is slow (needs faster-whisper, ~1 GB RAM); it hears in Hermes's `stt.local.language` or `stt.language`, not `language` |
@@ -181,6 +191,13 @@ faster model for voice turns can be set as `auxiliary.voice_chat` (Desktop: Sett
   the audio and the text are then dropped, never logged or passed to Hermes. A spoken PIN counts like a typed
   one; speech with fewer than 4 digits uses a try but does not count toward the lockout. After the PIN the call
   goes on once you pause, so nothing you are still saying reaches Hermes (no pause within 20 s ends the call).
+- Command approvals are answered only on the keypad: what you say while one waits is dropped, and no transcript
+  can control the gateway. A key counts only once the whole prompt was said (keys typed before are dropped), and
+  only for this one run, never for the rest of the call. You approve a description, not the command: a sentence
+  from Hermes's auxiliary model (`auxiliary.approval`, the one smart approval uses), told to treat the command
+  as untrusted, and the web addresses written in it. The model can be wrong or misled, and code can reach
+  addresses it does not spell out, so when in doubt press `2` and do it where you can read the command. Without
+  a description the command is refused; `approvals: deny` refuses all of them on calls.
 - The PIN must be 4 to 32 digits; use 6 or more. A call gets 3 tries. After 10 wrong PINs within an hour, on
   any calls, the line answers nobody (you included) until that hour has passed; a gateway restart clears it.
 - The plugin refuses to start without a PIN and an allow-list. AudioSocket has no authentication, so the plugin
@@ -199,6 +216,8 @@ faster model for voice turns can be set as `auxiliary.voice_chat` (Desktop: Sett
 - SIP and the call audio are not encrypted, like most phone lines.
 - What you say after the PIN is sent to your Hermes speech-to-text provider (OpenAI with the settings above),
   and the conversation is stored in Hermes like any other chat. A spoken PIN never leaves this machine.
+- A command that needs your approval goes to Hermes's auxiliary model for its description, with the secrets
+  Hermes redacts for display removed.
 - The plugin logs only the last three digits of a number; Asterisk's own log in its container has full caller
   numbers.
 

@@ -82,3 +82,15 @@ user did not hear is kept for a day and said on their next call.
 Secrets are fields of the plugin's card on the Messaging page, the rest is the plugin's settings page, so a user
 does not have to edit files. Only what must match the Asterisk container (ports and folders) stays in
 `config.yaml`.
+
+## Command approvals on the keypad, on a spoken description (2026-11-19)
+Calls used to refuse every approval, so whatever smart approval escalates (posting a Slack message from
+`execute_code`) could not be done from a call. Now the call says what the command does and the caller presses 1
+(once) or 2. Only keys answer: a transcript can be wrong or carry someone else's words, and Hermes would take a
+bare "yes" as an answer, so transcripts may not control the gateway at all. A call cannot show the command, so
+this departs from Hermes's rule that nobody approves a command they could not read: the caller approves one
+sentence from the auxiliary model (in their language) plus the web addresses written in the command, which the
+model cannot leave out. Hence approve once only, keys only after the whole prompt was heard, and no description
+means refused. A refusal by the safety check can still be overridden once, as in Hermes, after a warning. Two
+minutes for a key, as a call is shorter than Hermes's five-minute wait; the keys are repeated every 30 s so the
+silence does not sound like a dropped call. On by default (`approvals: deny` turns it off).

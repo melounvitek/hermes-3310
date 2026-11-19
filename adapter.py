@@ -35,6 +35,8 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult, StreamingTTS
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session_context import get_session_env
 from hermes_constants import get_hermes_home
+from tools.approval import (ack_gateway_approval, resolve_gateway_approval_card,
+                            restrict_gateway_approval_card_to_deny, withdraw_gateway_approval)
 
 from .audio import (FRAME_BYTES, HEARD_TICK, READY_BEEP, SR, STOP_TONE, THINK_BEEP, SpeechDetector, is_garbage,
                     to_call_rate)
@@ -57,7 +59,7 @@ RING_TIMEOUT_S = 60  # the dialplan rings for 20 s; after this the call is given
 MISSED_KEEP_S = 24 * 3600  # a missed message older than this is stale and dropped
 KEYS_AGAIN_S = 30  # while an approval waits for a key, its keys are said again this often
 DESCRIBE_TIMEOUT_S = 15  # longest wait for the auxiliary model's description of a command
-WEB_ADDRESS = re.compile(r"://(?:[^/@\s]*@)?([\w.-]+)")  # its host
+WEB_ADDRESS = re.compile(r"://(?:[^/@\s]*@)?(\[[^\]\s]*\]|[\w.-]+)")  # its host
 PIN_DIGIT_WORDS = {"nula": 0, "jedna": 1, "jeden": 1, "dva": 2, "dvě": 2, "tři": 3, "čtyři": 4, "pět": 5,
                    "šest": 6, "sedm": 7, "sedum": 7, "osm": 8, "osum": 8, "devět": 9}
 
@@ -149,8 +151,9 @@ class Call:
         self.detector: Optional[SpeechDetector] = None  # set once the PIN was entered, and during it if spoken
         self.on_speech_start: Callable[[], bool] = lambda: False  # returns whether it talks over Hermes
         self.talks_over = False
+        self.over_approval = False  # the caller started speaking while an approval waited
         self.on_star: Callable[[], None] = lambda: None
-        self.utterances: asyncio.Queue[Optional[tuple[bytes, bool]]] = asyncio.Queue()
+        self.utterances: asyncio.Queue[Optional[tuple[bytes, bool, bool]]] = asyncio.Queue()
         self.recognising = False  # an utterance is on its way to Hermes
         self.closed = asyncio.Event()
         self.deliveries: list[str] = []  # messages Hermes delivered that wait to be said
@@ -207,8 +210,10 @@ class Call:
                         utterance = self.detector.feed(payload, strict=self.voice)
                         if self.detector.in_speech and not was_speaking:
                             self.talks_over = self.on_speech_start()
+                            self.over_approval = bool(self.approvals)
                         if utterance:
-                            self.utterances.put_nowait((utterance, self.talks_over))
+                            self.utterances.put_nowait((utterance, self.talks_over,
+                                                        self.over_approval or bool(self.approvals)))
                         elif was_speaking and not self.detector.in_speech and self.talks_over:
                             self.holds -= 1  # too short to be anything
                     elif kind == DTMF and payload == b"*" and self.user_id is not None and self.detector is not None:
@@ -408,7 +413,7 @@ class PhoneAdapter(BasePlatformAdapter):
             # Messages not said: nobody typed the PIN, or the user hung up before hearing them.
             self._keep_missed([text for text in call.deliveries if text != self._phrases["missed"]])
             self._calls.pop(call.id, None)
-            self._refuse_approvals(call)
+            self._withdraw_approvals(call, "the caller hung up")
             if call.session_key and self._busy(call):
                 with contextlib.suppress(Exception):
                     await self._stop_turn(call)  # hung up while Hermes works: stop it
@@ -425,8 +430,13 @@ class PhoneAdapter(BasePlatformAdapter):
             call.recognising = False
             if (item := await call.utterances.get()) is None:
                 return
+            pcm, talks_over, over_approval = item
+            if over_approval:  # only keys answer an approval: speech over one goes nowhere, not even to STT
+                call.holds -= talks_over
+                if call.approvals:
+                    await self._speak(call, self._phrases["approval_keys"])
+                continue
             call.recognising = True  # until Hermes has it or it is dropped
-            pcm, talks_over = item
             generation, started = call.generation, time.monotonic()
             if not talks_over:
                 call.play(HEARD_TICK + THINK_BEEP)  # "heard you, working on it"
@@ -435,11 +445,6 @@ class PhoneAdapter(BasePlatformAdapter):
                         len(pcm) / SR / 2, time.monotonic() - started)
             if generation != call.generation:
                 continue  # * was pressed meanwhile (it dropped this speech and its hold)
-            if call.approvals:  # only keys answer an approval: speech is dropped, and they are said again
-                call.holds -= talks_over
-                if text and not is_garbage(text):
-                    await self._speak(call, self._phrases["approval_keys"])
-                continue
             if talks_over:
                 call.holds -= 1
                 if len(pcm) < SR * 2 or len(text.split()) < 2 or is_garbage(text):
@@ -474,7 +479,7 @@ class PhoneAdapter(BasePlatformAdapter):
         call.drop_utterances()
         call.silence()
         call.deliveries.clear()
-        self._refuse_approvals(call)
+        self._withdraw_approvals(call, "the caller pressed *")
         call.play(STOP_TONE)
         if self._busy(call):
             await self._stop_turn(call)
@@ -708,11 +713,12 @@ class PhoneAdapter(BasePlatformAdapter):
             call.play(pcm, voice=True)
 
     @staticmethod
-    async def _synthesize(text: str) -> bytes:
-        """``text`` spoken as call audio."""
+    async def _synthesize(text: str, clean: bool = True) -> bytes:
+        """``text`` spoken as call audio; ``clean``: first made fit for speech by Hermes's text cleaner."""
         from tools.tts_text_normalize import prepare_spoken_text
         tts = _tts()
-        text = prepare_spoken_text(text, max_chars=None)
+        if clean:
+            text = prepare_spoken_text(text, max_chars=None)
         if tts is None or not text:
             return b""
         pcm = await asyncio.to_thread(lambda: b"".join(tts.stream(text, format="pcm")))
@@ -730,7 +736,6 @@ class PhoneAdapter(BasePlatformAdapter):
     async def _send_exec_approval_prompt(self, prompt) -> SendResult:
         """Queue the approval on its live call (``_ask_approvals``). With approvals off, or once the call has
         ended (e.g. work going on in the background), it is refused at once."""
-        from tools.approval import restrict_gateway_approval_card_to_deny
         # The base class lifts the Deny-only mark once a card shows the whole command, and send() reports the
         # full command it sends ahead of a long one as shown. Nothing is shown on a call: the mark stays until
         # the caller has heard the prompt.
@@ -741,7 +746,8 @@ class PhoneAdapter(BasePlatformAdapter):
             if call.asking is None or call.asking.done():
                 call.asking = self._spawn(self._ask_approvals(call))
             return SendResult(success=True)
-        self._answer(call, prompt, "deny")
+        withdraw_gateway_approval(prompt.session_key, prompt.request_id,
+                                  "approvals are off on phone calls" if call else "the call has ended")
         logger.warning("phone: refused a command approval on call %s at once", prompt.chat_id[:8])
         self.resume_typing_for_chat(prompt.chat_id)  # the runner paused the beeps for the prompt
         if call is not None:
@@ -750,25 +756,30 @@ class PhoneAdapter(BasePlatformAdapter):
 
     async def _ask_approvals(self, call: Call) -> None:
         """Ask the call's approvals one after the other and answer each with the caller's key."""
-        while call.approvals:
-            prompt = call.approvals[0]
-            try:
-                choice = await self._ask(call, prompt)
-            except Exception:
-                logger.exception("phone: could not ask for an approval on call %s", call.id[:8])
-                choice = "deny"
-            if call.approvals[:1] == [prompt]:  # else refused meanwhile with the rest (hang-up)
-                call.approvals.pop(0)
-            # Hermes refuses an approve it does not accept (e.g. from someone else): then it is denied.
-            approved = choice == "once" and self._answer(call, prompt, "once")
-            if not approved:
-                self._answer(call, prompt, "deny")
-            self.resume_typing_for_chat(prompt.chat_id)
-            if choice is None:
-                continue  # nobody to tell, or nothing to answer
-            logger.info("phone: command approval %s %s on call %s", (prompt.request_id or "")[:8],
-                        "approved" if approved else "refused", call.id[:8])
-            await self._speak(call, self._phrases["approved" if approved else "refused"])
+        try:
+            while call.approvals:
+                prompt = call.approvals[0]
+                try:
+                    choice = await self._ask(call, prompt)
+                except Exception:
+                    logger.exception("phone: could not ask for an approval on call %s", call.id[:8])
+                    choice = None
+                if call.approvals[:1] == [prompt]:  # else withdrawn meanwhile with the rest (*, hang-up)
+                    call.approvals.pop(0)
+                # Hermes takes the answer only from someone who may give it; otherwise it is withdrawn.
+                answered = choice is not None and resolve_gateway_approval_card(
+                    prompt.session_key, choice, prompt.request_id, actor_id=call.user_id, extra=self.config.extra)
+                if not answered:
+                    withdraw_gateway_approval(prompt.session_key, prompt.request_id, "not answered on the call")
+                self.resume_typing_for_chat(prompt.chat_id)
+                if choice is None:
+                    continue  # nobody to tell, or nothing to answer
+                approved = answered and choice == "once"
+                logger.info("phone: command approval %s %s on call %s", (prompt.request_id or "")[:8],
+                            "approved" if approved else "refused", call.id[:8])
+                await self._speak(call, self._phrases["approved" if approved else "refused"])
+        finally:  # e.g. the voice failed: nothing is left waiting
+            self._withdraw_approvals(call, "it could not be asked on the call")
 
     async def _ask(self, call: Call, prompt) -> Optional[str]:
         """Say what ``prompt`` wants and wait for a key: 1 is "once", 2 (or no key in time) "deny"; None if it
@@ -777,28 +788,30 @@ class PhoneAdapter(BasePlatformAdapter):
 
         The caller hears a description, not the command: what the auxiliary model says it does, and the web
         addresses written in it, which the model cannot leave out."""
-        from tools.approval import ack_gateway_approval, restrict_gateway_approval_card_to_deny
         generation = call.generation
 
         def gone() -> bool:
             return (call.closed.is_set() or generation != call.generation
                     or not ack_gateway_approval(prompt.session_key, prompt.request_id))
 
-        description = await self._describe(call, prompt)
+        described = await self._synthesize(await self._describe(call, prompt))
         if gone():
             return None
-        if not description:  # nothing to judge it by
+        if not described:  # nothing to judge it by
             await self._speak(call, self._phrases["denied"])
             return None
-        parts = [self._phrases["approval"], description]
-        if hosts := list(dict.fromkeys(host.lower() for host in WEB_ADDRESS.findall(prompt.command)))[:5]:
-            parts.append(f"{self._phrases['approval_addresses']} {', '.join(hosts)}.")
+        parts = [await self._synthesize(self._phrases["approval"]), described]
+        if hosts := list(dict.fromkeys(host.lower() for host in WEB_ADDRESS.findall(prompt.command))):
+            # As written: Hermes's text cleaner drops what looks like code, such as api-v2.example.com.
+            parts.append(await self._synthesize(f"{self._phrases['approval_addresses']} {', '.join(hosts)}.",
+                                                clean=False))
         if prompt.smart_denied:
-            parts.append(self._phrases["approval_dangerous"])
-        pcm = await self._synthesize(" ".join([*parts, self._phrases["approval_keys"]]))
-        if not pcm or gone():
-            return None  # nothing the caller heard can be approved
-        call.play(pcm, voice=True)
+            parts.append(await self._synthesize(self._phrases["approval_dangerous"]))
+        parts.append(await self._synthesize(self._phrases["approval_keys"]))
+        # Each part said on its own and required: one the cleaner empties (an open <think>) cannot take the keys.
+        if not all(parts) or gone():
+            return None
+        call.play(b"".join(parts), voice=True)
         while call.playout:  # also paused while the caller talks over it
             if gone():
                 return None
@@ -848,18 +861,12 @@ class PhoneAdapter(BasePlatformAdapter):
                            type(e).__name__)
             return ""
 
-    def _answer(self, call: Optional[Call], prompt, choice: str) -> bool:
-        """Answer exactly the request ``prompt`` asks, as the caller; False if Hermes no longer waits for it or
-        does not accept the answer."""
-        from tools.approval import resolve_gateway_approval_card
-        return bool(resolve_gateway_approval_card(prompt.session_key, choice, prompt.request_id,
-                                                  actor_id=call.user_id if call else None, extra=self.config.extra))
-
-    def _refuse_approvals(self, call: Call) -> None:
-        """Refuse all of the call's approvals (*, hang-up). A /stop ends the waits of a running turn, but not
-        those of work going on in the background."""
+    @staticmethod
+    def _withdraw_approvals(call: Call, cause: str) -> None:
+        """Withdraw all of the call's approvals, which Hermes then refuses. A /stop ends the waits of a running
+        turn, but not those of work going on in the background."""
         for prompt in call.approvals:
-            self._answer(call, prompt, "deny")
+            withdraw_gateway_approval(prompt.session_key, prompt.request_id, cause)
         call.approvals.clear()
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,

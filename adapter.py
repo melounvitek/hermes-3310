@@ -21,6 +21,7 @@ import re
 import struct
 import tempfile
 import time
+import urllib.parse
 import uuid
 import wave
 from concurrent.futures import ThreadPoolExecutor
@@ -59,7 +60,7 @@ RING_TIMEOUT_S = 60  # the dialplan rings for 20 s; after this the call is given
 MISSED_KEEP_S = 24 * 3600  # a missed message older than this is stale and dropped
 KEYS_AGAIN_S = 30  # while an approval waits for a key, its keys are said again this often
 DESCRIBE_TIMEOUT_S = 15  # longest wait for the auxiliary model's description of a command
-WEB_ADDRESS = re.compile(r"://(?:[^/@\s]*@)?(\[[^\]\s]*\]|[\w.-]+)")  # its host
+WEB_ADDRESS = re.compile(r"[a-z][a-z0-9+.-]*://[^\s'\"`<>]+", re.I)  # up to a quote, as written in code
 PIN_DIGIT_WORDS = {"nula": 0, "jedna": 1, "jeden": 1, "dva": 2, "dvě": 2, "tři": 3, "čtyři": 4, "pět": 5,
                    "šest": 6, "sedm": 7, "sedum": 7, "osm": 8, "osum": 8, "devět": 9}
 
@@ -83,6 +84,19 @@ def _is_loopback(host: str) -> bool:
 
 def _redact(number: str) -> str:
     return f"…{_digits(number)[-3:]}" if _digits(number) else "unknown"
+
+
+def _web_hosts(command: str) -> list[str]:
+    """The hosts of the web addresses written in ``command``, each once."""
+    hosts = []
+    for address in WEB_ADDRESS.findall(command):
+        try:
+            host = urllib.parse.urlsplit(address).hostname
+        except ValueError:  # e.g. an IPv6 address without its closing ]
+            host = address.split("://", 1)[1]
+        if host and host not in hosts:
+            hosts.append(host)
+    return hosts
 
 
 def _tts():
@@ -430,13 +444,8 @@ class PhoneAdapter(BasePlatformAdapter):
             call.recognising = False
             if (item := await call.utterances.get()) is None:
                 return
-            pcm, talks_over, over_approval = item
-            if over_approval:  # only keys answer an approval: speech over one goes nowhere, not even to STT
-                call.holds -= talks_over
-                if call.approvals:
-                    await self._speak(call, self._phrases["approval_keys"])
-                continue
             call.recognising = True  # until Hermes has it or it is dropped
+            pcm, talks_over, over_approval = item
             generation, started = call.generation, time.monotonic()
             if not talks_over:
                 call.play(HEARD_TICK + THINK_BEEP)  # "heard you, working on it"
@@ -445,6 +454,13 @@ class PhoneAdapter(BasePlatformAdapter):
                         len(pcm) / SR / 2, time.monotonic() - started)
             if generation != call.generation:
                 continue  # * was pressed meanwhile (it dropped this speech and its hold)
+            # Only keys answer an approval: speech over one, or recognised while one came, goes nowhere (and must
+            # not silence its prompt, which would count as heard).
+            if over_approval or call.approvals:
+                call.holds -= talks_over
+                if call.approvals and text and not is_garbage(text):
+                    await self._speak(call, self._phrases["approval_keys"])
+                continue
             if talks_over:
                 call.holds -= 1
                 if len(pcm) < SR * 2 or len(text.split()) < 2 or is_garbage(text):
@@ -801,7 +817,7 @@ class PhoneAdapter(BasePlatformAdapter):
             await self._speak(call, self._phrases["denied"])
             return None
         parts = [await self._synthesize(self._phrases["approval"]), described]
-        if hosts := list(dict.fromkeys(host.lower() for host in WEB_ADDRESS.findall(prompt.command))):
+        if hosts := _web_hosts(prompt.command):
             # As written: Hermes's text cleaner drops what looks like code, such as api-v2.example.com.
             parts.append(await self._synthesize(f"{self._phrases['approval_addresses']} {', '.join(hosts)}.",
                                                 clean=False))

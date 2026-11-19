@@ -14,8 +14,8 @@ from test_outbound_calls import heard_about
 CARD_FIELDS = ["PHONE_PIN", "PHONE_ALLOWED_CALLERS", "SIP_SERVER", "SIP_USER", "SIP_PASSWORD",
                "PHONE_HOME_NUMBER", "SIP_CALLER_ID", "SIP_IDENTIFY_EXTRA"]
 PHRASES = ["phrase_pin", "phrase_pin_spoken", "phrase_wrong_pin", "phrase_hello", "phrase_bye", "phrase_not_understood",
-           "phrase_stopped", "phrase_denied", "phrase_approval", "phrase_approval_keys", "phrase_approved",
-           "phrase_refused", "phrase_missed"]
+           "phrase_stopped", "phrase_denied", "phrase_approval", "phrase_approval_addresses", "phrase_approval_dangerous",
+           "phrase_approval_keys", "phrase_approved", "phrase_refused", "phrase_missed"]
 CALLS = ["instructions", "language", "spoken_pin", "approvals", "approval_timeout"]
 LISTENING = ["stt_timeout", "stt_fallback", "end_silence", "start_vad", "barge_vad", "barge_windows"]
 

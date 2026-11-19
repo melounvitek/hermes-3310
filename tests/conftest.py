@@ -33,8 +33,8 @@ PIN, CALLER = "4321", "420777000111"
 HOME_NUMBER = "00420777000111"  # CALLER in the provider's dial format: the number Hermes calls
 SHORT_PHRASES = {"pin": "Kód.", "pin_spoken": "Kód, nebo ho řekni.", "wrong_pin": "Špatně.", "bye": "Nashle.", "hello": "Ahoj.",
                  "not_understood": "Nerozuměl jsem.", "stopped": "Stop.", "denied": "Zamítnuto.", "missed": "Volal jsem.",
-                 "approval": "Schválíš tohle?", "approval_keys": "Jednička ano, dvojka ne.", "approved": "Povoleno.",
-                 "refused": "Neschváleno, nedělám to."}
+                 "approval": "Schválíš tohle?", "approval_addresses": "Adresy:", "approval_dangerous": "Pozor, nebezpečné.",
+                 "approval_keys": "Jednička ano, dvojka ne.", "approved": "Povoleno.", "refused": "Neschváleno, nedělám to."}
 
 
 @pytest.fixture

